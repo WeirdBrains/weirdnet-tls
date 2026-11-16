@@ -1,0 +1,51 @@
+[package]
+name = "weirdnet-tls"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Weirdnet TLS certificates: ACME (TLS-ALPN-01, HTTP-01, DNS-01) over instant-acme, certificate stores, an SNI resolver with hot swap and pinned certificates, ARI-based renewal with backoff and a typed status, ring or aws-lc-rs, and a mock ACME CA for tests."
+authors = ["m3talsmith <m3talsmith@gmail.com>"]
+license = "BSD-3-Clause"
+repository = "https://github.com/WeirdBrains/weirdnet-tls"
+documentation = "https://docs.rs/weirdnet-tls"
+readme = "README.md"
+keywords = ["acme", "letsencrypt", "tls", "rustls", "certificates"]
+categories = ["network-programming", "cryptography"]
+include = ["src/**", "README.md", "SECURITY.md", "CHANGELOG.md", "LICENSE"]
+
+[features]
+default = ["ring"]
+## rustls, rcgen and instant-acme on ring.
+ring = ["rustls/ring", "rcgen/ring", "instant-acme/ring"]
+## rustls, rcgen and instant-acme on aws-lc-rs (wins when both are on).
+aws-lc-rs = ["rustls/aws-lc-rs", "rcgen/aws_lc_rs", "instant-acme/aws-lc-rs"]
+## DNS-01 through grindvakt-core DNS providers.
+grindvakt = ["dep:grindvakt-core"]
+## A CertStore in a weirdnet-storage (SQLCipher) database.
+storage = ["dep:weirdnet-storage"]
+## The mock ACME CA (`testing::MockCa`).
+testing = ["dep:http-body-util"]
+
+[dependencies]
+instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "time", "x509-parser"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "crypto"] }
+x509-parser = { version = "0.18", default-features = false }
+time = { version = "0.3", features = ["serde", "formatting"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util", "process"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+http = "1"
+bytes = "1"
+tracing = "0.1"
+http-body-util = { version = "0.1", optional = true }
+grindvakt-core = { version = "1.2", default-features = false, optional = true }
+weirdnet-storage = { version = "0.1", default-features = false, optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+http-body-util = "0.1"
+weirdnet-tls = { path = ".", features = ["testing"] }
