@@ -24,7 +24,7 @@ grindvakt = ["dep:grindvakt-core"]
 ## A CertStore in a weirdnet-storage (SQLCipher) database.
 storage = ["dep:weirdnet-storage"]
 ## The mock ACME CA (`testing::MockCa`).
-testing = ["dep:http-body-util"]
+testing = ["dep:http-body-util", "dep:base64", "rcgen/x509-parser"]
 
 [dependencies]
 instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "time", "x509-parser"] }
@@ -41,6 +41,7 @@ http = "1"
 bytes = "1"
 tracing = "0.1"
 http-body-util = { version = "0.1", optional = true }
+base64 = { version = "0.22", optional = true }
 grindvakt-core = { version = "1.2", default-features = false, optional = true }
 weirdnet-storage = { version = "0.1", default-features = false, optional = true }
 
@@ -48,4 +49,4 @@ weirdnet-storage = { version = "0.1", default-features = false, optional = true 
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tempfile = "3"
 http-body-util = "0.1"
-weirdnet-tls = { path = ".", features = ["testing"] }
+weirdnet-tls = { path = ".", default-features = false, features = ["testing"] }

@@ -99,13 +99,7 @@ impl Resolver {
     /// Pins `pair` for `pattern` (a name or `*.` wildcard), whatever the certificate's names.
     pub fn pin(&self, pattern: &str, pair: &CertPair) -> Result<CertInfo> {
         let (k, i) = cert::certified_key(pair)?;
-        self.inner
-            .write()
-            .unwrap()
-            .names
-            .entry(normalize(pattern))
-            .or_default()
-            .insert(Source::Pinned, Entry { key: k, not_after: i.not_after });
+        self.inner.write().unwrap().names.entry(normalize(pattern)).or_default().insert(Source::Pinned, Entry { key: k, not_after: i.not_after });
         Ok(i)
     }
 

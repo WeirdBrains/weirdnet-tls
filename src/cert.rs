@@ -139,8 +139,10 @@ pub(crate) fn alpn_cert(name: &str, digest: &[u8]) -> Result<Arc<CertifiedKey>> 
     let kp = rcgen::KeyPair::generate()?;
     let c = p.self_signed(&kp)?;
     let key = PrivateKeyDer::Pkcs8(kp.serialize_der().into());
-    let ck = CertifiedKey::from_der(vec![c.der().clone()], key, &crate::crypto_provider()).map_err(|e| Error::Cert(e.to_string()))?;
-    Ok(Arc::new(ck))
+    // Not `from_der`: its key check parses the leaf with webpki, which refuses the critical
+    // acmeIdentifier extension.
+    let signer = crate::crypto_provider().key_provider.load_private_key(key).map_err(|e| Error::Cert(e.to_string()))?;
+    Ok(Arc::new(CertifiedKey::new(vec![c.der().clone()], signer)))
 }
 
 /// A fresh certificate key and CSR for `names`.

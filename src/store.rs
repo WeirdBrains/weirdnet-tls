@@ -288,6 +288,21 @@ mod tests {
         assert_eq!(s.get("cert/a.json").unwrap(), None);
     }
 
+    #[cfg(feature = "storage")]
+    #[test]
+    fn sql_store_round_trip() {
+        use std::sync::{Arc, Mutex};
+        let conn = weirdnet_storage::rusqlite::Connection::open_in_memory().unwrap();
+        let s = SqlStore::new(Arc::new(Mutex::new(conn))).unwrap();
+        assert_eq!(s.get("cert/a.json").unwrap(), None);
+        s.put("cert/a.json", b"one").unwrap();
+        s.put("cert/a.json", b"two").unwrap();
+        assert_eq!(s.get("cert/a.json").unwrap().as_deref(), Some(&b"two"[..]));
+        s.delete("cert/a.json").unwrap();
+        assert_eq!(s.get("cert/a.json").unwrap(), None);
+        assert!(s.put("../x", b"").is_err());
+    }
+
     #[test]
     fn json_round_trip() {
         let s = MemoryStore::new();

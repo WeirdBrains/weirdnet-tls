@@ -266,6 +266,64 @@ mod gv {
             Box::pin(async { Ok(()) })
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use grindvakt_core::record::ExistingRecord;
+        use std::future::Future;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Fake(Mutex<Vec<ExistingRecord>>, Mutex<Vec<String>>);
+
+        impl DnsProvider for Fake {
+            fn name(&self) -> &str {
+                "fake"
+            }
+            fn list(&self, zone: &str, name: &str, kind: RecordKind) -> impl Future<Output = grindvakt_core::Result<Vec<ExistingRecord>>> + Send {
+                self.1.lock().unwrap().push(format!("list {zone} {name} {}", kind.as_str()));
+                let v = self.0.lock().unwrap().iter().filter(|r| r.name == name && r.value.kind() == kind).cloned().collect();
+                async { Ok(v) }
+            }
+            fn create(&self, zone: &str, name: &str, value: &RecordValue, ttl: u32) -> impl Future<Output = grindvakt_core::Result<()>> + Send {
+                self.1.lock().unwrap().push(format!("create {zone} {name} {ttl}"));
+                let mut g = self.0.lock().unwrap();
+                let id = g.len() as u64 + 1;
+                g.push(ExistingRecord { id, name: name.into(), value: value.clone(), ttl: Some(ttl) });
+                async { Ok(()) }
+            }
+            fn update(&self, zone: &str, id: u64, value: &RecordValue, ttl: u32) -> impl Future<Output = grindvakt_core::Result<()>> + Send {
+                self.1.lock().unwrap().push(format!("update {zone} {id} {ttl}"));
+                for r in self.0.lock().unwrap().iter_mut().filter(|r| r.id == id) {
+                    r.value = value.clone();
+                }
+                async { Ok(()) }
+            }
+        }
+
+        #[tokio::test]
+        async fn creates_then_overwrites() {
+            let g = GrindvaktDns::new(Fake::default(), "Example.com").ttl(120);
+            assert_eq!(g.relative("_acme-challenge.a.example.com").unwrap(), "_acme-challenge.a");
+            assert!(g.relative("_acme-challenge.other.test").is_err());
+            g.present(&DnsRecord::new("example.com", "one")).await.unwrap();
+            g.cleanup(&DnsRecord::new("example.com", "one")).await.unwrap();
+            g.present(&DnsRecord::new("*.example.com", "two")).await.unwrap();
+            assert_eq!(
+                *g.provider.1.lock().unwrap(),
+                [
+                    "list example.com _acme-challenge TXT",
+                    "create example.com _acme-challenge 120",
+                    "list example.com _acme-challenge TXT",
+                    "update example.com 1 120"
+                ]
+            );
+            let recs = g.provider.0.lock().unwrap();
+            assert_eq!(recs.len(), 1);
+            assert_eq!(recs[0].value, RecordValue::Txt("two".into()));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,10 +364,8 @@ mod tests {
     async fn hook_gets_the_record() {
         let d = tempfile::tempdir().unwrap();
         let out = d.path().join("out");
-        let hook = HookDns::new(format!(
-            "echo \"$WEIRDNET_TLS_ACTION $WEIRDNET_TLS_DOMAIN $WEIRDNET_TLS_NAME $WEIRDNET_TLS_TXT\" >> {}",
-            out.display()
-        ));
+        let hook =
+            HookDns::new(format!("echo \"$WEIRDNET_TLS_ACTION $WEIRDNET_TLS_DOMAIN $WEIRDNET_TLS_NAME $WEIRDNET_TLS_TXT\" >> {}", out.display()));
         let r = DnsRecord::new("*.example.com", "abc");
         hook.present(&r).await.unwrap();
         hook.cleanup(&r).await.unwrap();

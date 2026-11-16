@@ -352,7 +352,8 @@ impl Acme {
         match acct.renewal_info(&id).await {
             Ok((info, retry)) => {
                 let w = Window { start: info.suggested_window.start.into(), end: info.suggested_window.end.into() };
-                let retry = if retry.is_zero() { renew::ARI_DEFAULT_RECHECK } else { retry.clamp(Duration::from_secs(60), Duration::from_secs(86400)) };
+                let retry =
+                    if retry.is_zero() { renew::ARI_DEFAULT_RECHECK } else { retry.clamp(Duration::from_secs(60), Duration::from_secs(86400)) };
                 Ok(Some((w, retry)))
             }
             Err(instant_acme::Error::Unsupported(_)) => Ok(None),
@@ -506,7 +507,7 @@ impl Acme {
                 let mut ch = a.challenge(self.cfg.challenge.acme()).ok_or_else(|| Error::Acme("challenge vanished".into()))?;
                 ch.set_ready().await?;
             }
-            let st = order.poll_ready(&self.cfg.retry).await?;
+            let st = order.poll_ready(&self.cfg.retry).await.map_err(|e| Error::Acme(format!("validation failed: {e}")))?;
             if st != OrderStatus::Ready {
                 let why = order.state().error.as_ref().map(|p| p.to_string()).unwrap_or_default();
                 return Err(Error::Acme(format!("validation failed: the order is {st:?} {why}").trim().to_string()));
