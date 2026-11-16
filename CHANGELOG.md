@@ -6,6 +6,8 @@ All notable changes to weirdnet-tls are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
 ### Added
 
 - `AcmeConfig::profile_optional`: when the CA refuses the profile, order with its default instead.
@@ -21,5 +23,6 @@ All notable changes to weirdnet-tls are listed here. The format follows
 - Renewal by ACME Renewal Information or at two thirds of the lifetime, with backoff and a typed status.
 - A mock ACME CA for tests (feature `testing`).
 
-[Unreleased]: https://github.com/WeirdBrains/weirdnet-tls/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/WeirdBrains/weirdnet-tls/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/WeirdBrains/weirdnet-tls/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/WeirdBrains/weirdnet-tls/compare/cb06c89...v0.1.0
