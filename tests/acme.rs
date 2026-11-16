@@ -239,3 +239,21 @@ async fn background_renewer_issues_and_reports() {
     assert!(d.path().join("cert/bg.json").exists() && d.path().join("state/bg.json").exists());
     assert_eq!(std::fs::read_dir(d.path().join("account")).unwrap().count(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_profile_falls_back_only_when_optional() {
+    let ca = MockCa::new();
+    let resolver = Arc::new(Resolver::new());
+    let mut cfg = config("web", &["www.example.com"], ChallengeKind::Http01);
+    cfg.profile = Some("nonesuch".into());
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    ca.validate_http01_at(l.local_addr().unwrap());
+    let strict = acme(&ca, cfg.clone(), Arc::new(MemoryStore::new()), resolver.clone());
+    assert!(strict.issue().await.is_err(), "refused profile, no fallback");
+    cfg.profile_optional = true;
+    let a = acme(&ca, cfg, Arc::new(MemoryStore::new()), resolver.clone());
+    let _srv = challenge::serve_http01(l, a.http01().clone());
+    a.issue().await.unwrap();
+    let orders = ca.orders();
+    assert_eq!(orders.last().unwrap().profile, None, "{orders:#?}");
+}

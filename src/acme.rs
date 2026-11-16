@@ -103,6 +103,8 @@ pub struct AcmeConfig {
     pub challenge: ChallengeKind,
     /// An ACME profile, for CAs that offer them (such as Let's Encrypt's `shortlived`).
     pub profile: Option<String>,
+    /// When the CA refuses the profile's order, order with the CA's default instead.
+    pub profile_optional: bool,
     /// How long to wait after publishing DNS-01 records before asking the CA to look.
     pub dns_wait: Duration,
     /// Use ACME Renewal Information (RFC 9773) when the CA offers it.
@@ -121,6 +123,7 @@ impl AcmeConfig {
             contact: Vec::new(),
             challenge: ChallengeKind::TlsAlpn01,
             profile: None,
+            profile_optional: false,
             dns_wait: Duration::from_secs(30),
             ari: true,
             retry: RetryPolicy::new().timeout(Duration::from_secs(120)),
@@ -436,9 +439,9 @@ impl Acme {
         let names: Vec<String> = self.cfg.names.iter().map(|n| cert::normalize(n)).collect();
         let ids: Vec<Identifier> = names.iter().map(|n| Identifier::Dns(n.clone())).collect();
         let replaces = if self.cfg.ari { self.stored().ok().flatten().and_then(|(_, i)| i.ari()) } else { None };
-        let new = |r: Option<instant_acme::CertificateIdentifier<'static>>| {
+        let new = |r: Option<instant_acme::CertificateIdentifier<'static>>, with_profile: bool| {
             let mut o = NewOrder::new(&ids);
-            if let Some(p) = &self.cfg.profile {
+            if let Some(p) = self.cfg.profile.as_ref().filter(|_| with_profile) {
                 o = o.profile(p);
             }
             if let Some(r) = r {
@@ -446,16 +449,33 @@ impl Acme {
             }
             o
         };
-        let mut order = match replaces {
-            Some(r) => match acct.new_order(&new(Some(r))).await {
-                Ok(o) => o,
-                // CAs refuse `replaces` without ARI, or for a cert already replaced.
-                Err(e) => {
-                    tracing::debug!(set = %self.cfg.set, "order with replaces failed ({e}); ordering without");
-                    acct.new_order(&new(None)).await?
+        // CAs refuse `replaces` without ARI, or for a cert already replaced: then order
+        // without it. With `profile_optional`, a refused profile falls back to the default.
+        let mut attempts = vec![(replaces.clone(), true)];
+        if replaces.is_some() {
+            attempts.push((None, true));
+        }
+        if self.cfg.profile.is_some() && self.cfg.profile_optional {
+            attempts.push((None, false));
+        }
+        let mut order = None;
+        let mut last = None;
+        for (r, with_profile) in attempts {
+            match acct.new_order(&new(r, with_profile)).await {
+                Ok(o) => {
+                    order = Some(o);
+                    break;
                 }
-            },
-            None => acct.new_order(&new(None)).await?,
+                Err(e) => {
+                    tracing::debug!(set = %self.cfg.set, "order failed ({e}); trying the next way");
+                    last = Some(e);
+                }
+            }
+        }
+        let mut order = match (order, last) {
+            (Some(o), _) => o,
+            (None, Some(e)) => return Err(e.into()),
+            (None, None) => return Err(Error::Acme("no order".into())),
         };
 
         let mut alpn: Vec<String> = Vec::new();

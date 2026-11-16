@@ -6,6 +6,10 @@ All notable changes to weirdnet-tls are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `AcmeConfig::profile_optional`: when the CA refuses the profile, order with its default instead.
+
 ## [0.1.0] - 2026-11-16
 
 ### Added
