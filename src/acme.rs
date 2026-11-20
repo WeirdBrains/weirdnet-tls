@@ -349,6 +349,12 @@ impl Acme {
         }
     }
 
+    /// Copies an app's earlier files into the store for this set and directory (see
+    /// [`store::import`]); call it before [`Acme::load`].
+    pub fn import(&self, legacy: &store::Legacy) -> Result<store::Imported> {
+        store::import(&*self.store, &self.cfg.set, self.cfg.directory.url(), legacy)
+    }
+
     /// Installs the stored certificate in the resolver and updates the status, with the next
     /// attempt from [`Acme::schedule`].
     pub fn load(&self) -> Result<Option<CertInfo>> {

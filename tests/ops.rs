@@ -241,3 +241,58 @@ async fn http01_challenge_only_listener_and_dns01_refused() {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     assert!(d.serve_challenge(l).is_err());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_files_are_imported_once() {
+    let ca = MockCa::new();
+    let cfg = config("app", &["app.example.com"], ChallengeKind::Http01);
+    // An account registered the old way, and the old app's files.
+    let old_store = Arc::new(MemoryStore::new());
+    acme(&ca, cfg.clone(), old_store.clone(), Arc::new(Resolver::new())).account().await.unwrap();
+    let creds = old_store.get(&store::account_key(MockCa::DIRECTORY)).unwrap().unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let legacy_dir = d.path().join("old");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    let pair = cert::self_signed(&names(&["app.example.com"]), 90).unwrap();
+    std::fs::write(legacy_dir.join("account.json"), &creds).unwrap();
+    std::fs::write(legacy_dir.join("cert.pem"), &pair.chain_pem).unwrap();
+    std::fs::write(legacy_dir.join("key.pem"), &pair.key_pem).unwrap();
+    let files = |dir: &std::path::Path| {
+        store::Legacy::from_files(Some(&dir.join("account.json")), Some(&dir.join("cert.pem")), Some(&dir.join("key.pem"))).unwrap()
+    };
+    let failed = SystemTime::now();
+    let state = renew::Persisted { failures: 2, last_failure: Some(failed), last_error: Some("old".into()), ..Default::default() };
+    let legacy = files(&legacy_dir).with_state(state.clone());
+
+    let fs: Arc<dyn CertStore> = Arc::new(FileStore::new(d.path().join("tls")));
+    let resolver = Arc::new(Resolver::new());
+    let a = acme(&ca, cfg.clone(), fs.clone(), resolver.clone());
+    let done = a.import(&legacy).unwrap();
+    assert!(done.account && done.cert && done.state && done.any());
+    let served = a.load().unwrap().unwrap();
+    assert_eq!(resolver.lookup(Some("app.example.com")).unwrap().1.end_entity_cert().unwrap().to_vec(), served.der);
+    assert_eq!(a.schedule(SystemTime::now()).unwrap().failures, 2);
+    a.account().await.unwrap();
+    assert_eq!(ca.accounts(), 1, "the imported account is reused");
+
+    // Again: nothing to do, and nothing is overwritten.
+    assert!(!a.import(&legacy).unwrap().any());
+    let mut other = files(&legacy_dir);
+    other.cert = Some(cert::self_signed(&names(&["app.example.com"]), 30).unwrap());
+    assert!(!a.import(&other).unwrap().any());
+    assert_eq!(a.stored().unwrap().unwrap().1.der, served.der);
+
+    // Missing files are skipped; bad parts refuse the whole import.
+    let none = files(&d.path().join("nowhere"));
+    assert!(none.account.is_none() && none.cert.is_none());
+    let mem = MemoryStore::new();
+    let mut bad = files(&legacy_dir);
+    bad.account = Some(b"{}".to_vec());
+    assert!(store::import(&mem, "app", MockCa::DIRECTORY, &bad).is_err());
+    let mismatched = cert::self_signed(&names(&["app.example.com"]), 30).unwrap();
+    let mut bad = files(&legacy_dir);
+    bad.cert = Some(CertPair { key_pem: mismatched.key_pem, ..pair });
+    assert!(store::import(&mem, "app", MockCa::DIRECTORY, &bad).is_err());
+    assert!(mem.keys().is_empty(), "nothing written");
+    assert!(format!("{legacy:?}").contains("<redacted>") && !format!("{legacy:?}").contains("PRIVATE KEY"));
+}

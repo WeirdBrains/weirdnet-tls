@@ -22,6 +22,7 @@ All notable changes to weirdnet-tls are listed here. The format follows
 - `Resolver::set_default_as`, `set_default_pair` and `default_source`: a default certificate with its own source.
 - `Acme::trigger_renewal`: a forced renewal from the background renewer, still behind the repeat-certificate guard.
 - `challenge::serve_tls_alpn01`, `Resolver::challenge_config` and `Acme::serve_challenge`: challenge-only listeners for TLS-ALPN-01 and HTTP-01 while the app isn't running.
+- `store::import`, `store::Legacy` and `Acme::import`: copy an app's earlier account, certificate and state into a store, never overwriting.
 - `HookDns::with_prefix` and `HookDns::with_env`: DNS hooks get the record variables under an app's own prefix, and fixed extras.
 
 ## [0.2.0] - 2026-11-16

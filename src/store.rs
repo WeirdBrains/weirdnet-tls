@@ -74,6 +74,119 @@ pub fn save_cert(s: &dyn CertStore, set: &str, pair: &CertPair) -> Result<()> {
     put_json(s, &cert_key(set), pair)
 }
 
+/// What an app kept before it used a [`CertStore`] (its own file layout, an older version's
+/// files), for [`import`]. Build it with [`Legacy::from_files`] or set the fields.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct Legacy {
+    /// The ACME account: instant-acme `AccountCredentials` JSON.
+    pub account: Option<Vec<u8>>,
+    /// The certificate chain and key.
+    pub cert: Option<CertPair>,
+    /// The renewal state that goes with the certificate (converted by the app).
+    pub state: Option<crate::renew::Persisted>,
+}
+
+impl std::fmt::Debug for Legacy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Legacy")
+            .field("account", &self.account.as_ref().map(|_| "<redacted>"))
+            .field("cert", &self.cert)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+fn read_opt(p: Option<&Path>) -> Result<Option<Vec<u8>>> {
+    match p.map(std::fs::read) {
+        None => Ok(None),
+        Some(Ok(b)) => Ok(Some(b)),
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Some(Err(e)) => Err(e.into()),
+    }
+}
+
+impl Legacy {
+    /// Nothing to import.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reads an account credentials JSON file, and a PEM chain and key file, skipping files
+    /// that don't exist (the certificate needs both).
+    pub fn from_files(account: Option<&Path>, chain_pem: Option<&Path>, key_pem: Option<&Path>) -> Result<Self> {
+        let text = |b: Vec<u8>| String::from_utf8(b).map_err(|_| Error::Store("a legacy PEM file is not text".into()));
+        let cert = match (read_opt(chain_pem)?, read_opt(key_pem)?) {
+            (Some(c), Some(k)) => Some(CertPair { chain_pem: text(c)?, key_pem: text(k)? }),
+            _ => None,
+        };
+        Ok(Self { account: read_opt(account)?, cert, state: None })
+    }
+
+    /// Adds the renewal state that goes with the certificate.
+    pub fn with_state(mut self, state: crate::renew::Persisted) -> Self {
+        self.state = Some(state);
+        self
+    }
+}
+
+/// What [`import`] copied.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Imported {
+    /// The account.
+    pub account: bool,
+    /// The certificate.
+    pub cert: bool,
+    /// The renewal state.
+    pub state: bool,
+}
+
+impl Imported {
+    /// True if anything was copied.
+    pub fn any(&self) -> bool {
+        self.account || self.cert || self.state
+    }
+}
+
+/// Copies `legacy` into `store` for certificate set `set` and ACME directory URL `directory`,
+/// never overwriting: the account only if the store has none for the directory, the
+/// certificate only if the set has none, and the state only with the certificate and if the set
+/// has none. Everything is checked first (the account must be ACME credentials, the chain and
+/// key must belong together), and nothing is written if a part is bad. Run it before
+/// [`crate::Acme::load`]; it is safe to run on every start. The legacy files are left alone.
+pub fn import(store: &dyn CertStore, set: &str, directory: &str, legacy: &Legacy) -> Result<Imported> {
+    if let Some(a) = &legacy.account {
+        let _creds: instant_acme::AccountCredentials =
+            serde_json::from_slice(a).map_err(|_| Error::Store("the legacy ACME account is not account credentials".into()))?;
+    }
+    if let Some(p) = &legacy.cert {
+        crate::cert::certified_key(p)?;
+    }
+    let mut done = Imported::default();
+    let akey = account_key(directory);
+    if let Some(a) = &legacy.account
+        && store.get(&akey)?.is_none()
+    {
+        store.put(&akey, a)?;
+        done.account = true;
+    }
+    if let Some(p) = &legacy.cert
+        && load_cert(store, set)?.is_none()
+    {
+        save_cert(store, set, p)?;
+        done.cert = true;
+        let skey = state_key(set);
+        if let Some(st) = &legacy.state
+            && store.get(&skey)?.is_none()
+        {
+            put_json(store, &skey, st)?;
+            done.state = true;
+        }
+    }
+    Ok(done)
+}
+
 /// Keeps everything in memory (tests, or callers that persist elsewhere).
 #[derive(Default)]
 pub struct MemoryStore(Mutex<HashMap<String, Vec<u8>>>);

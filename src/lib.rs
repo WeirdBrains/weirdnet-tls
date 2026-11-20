@@ -8,7 +8,8 @@
 //!   a manual prompt, and [grindvakt-core](https://docs.rs/grindvakt-core) providers with the
 //!   `grindvakt` feature).
 //! - [`store`]: the [`CertStore`] trait, a file store (files 0600), a memory store, and with the
-//!   `storage` feature a store in an encrypted weirdnet-storage database.
+//!   `storage` feature a store in an encrypted weirdnet-storage database; [`store::import`]
+//!   moves an app's earlier files in.
 //! - [`resolver`]: a rustls SNI [`Resolver`] with per-name hot swap, source order user, ACME,
 //!   self-signed, pinned certificates for internal names, and the TLS-ALPN-01 answers.
 //! - [`renew`]: when to renew (ACME Renewal Information, else two thirds of the lifetime),

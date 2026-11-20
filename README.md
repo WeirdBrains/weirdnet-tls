@@ -18,7 +18,9 @@ itcmdr and TAUR.
   never a real certificate) or HTTP-01 on a listener of its own.
 - **Stores**: the `CertStore` trait, `FileStore` (files 0600 in directories 0700, atomic
   writes), `MemoryStore`, and (feature `storage`) `SqlStore` in an encrypted weirdnet-storage
-  database.
+  database. `Acme::import` (or `store::import`) copies an app's earlier files (its own layout or
+  an older version's: account credentials, chain and key, renewal state) into the store once,
+  never overwriting, so an app can move onto weirdnet-tls without a new certificate.
 - **Resolver**: per-name certificates swapped without a restart. A handshake gets a pinned
   certificate first (internal names, a private CA), then the user's own, then ACME, then
   self-signed, skipping expired ones. A default answers handshakes without SNI or for an
