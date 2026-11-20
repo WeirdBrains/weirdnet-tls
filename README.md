@@ -22,7 +22,8 @@ itcmdr and TAUR.
 - **Renewal**: at a point in the CA's ACME Renewal Information window (RFC 9773) with
   `replaces`, else two thirds into the lifetime; failures back off from 1 hour to 1 day; a
   forced renewal within a day of the last issue is refused; `Acme::watch` gives a typed
-  `Status`. A failed order never drops TLS: the last certificate stays in service.
+  `Status`. `acme::schedule(store, cfg, now)` says when the next renewal is due from the store
+  alone (cached ARI window, backoff), for status commands while the app isn't running. A failed order never drops TLS: the last certificate stays in service.
 - **Crypto**: `ring` (default) or `aws-lc-rs`.
 - **Tests**: `testing::MockCa` (feature `testing`) is an in-process ACME CA that validates the
   real HTTP-01, TLS-ALPN-01 and DNS-01 answers and serves ARI.

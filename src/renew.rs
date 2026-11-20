@@ -75,6 +75,35 @@ pub fn next_attempt(due: SystemTime, st: &Persisted) -> SystemTime {
     }
 }
 
+/// When a certificate set's renewal is due, worked out from the store alone (no network, no
+/// running renewer): see [`crate::acme::schedule`] and [`crate::Acme::schedule`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Schedule {
+    /// The stored certificate, if any.
+    pub cert: Option<crate::CertInfo>,
+    /// When renewal is due: in the cached ARI window, else two thirds into the lifetime; `now`
+    /// when there is no certificate or it lacks a configured name.
+    pub due: SystemTime,
+    /// When the renewer will try: `due`, or later while failures back off.
+    pub next_attempt: SystemTime,
+    /// True if `due` came from a cached ARI window.
+    pub ari: bool,
+    /// Failed attempts in a row.
+    pub failures: u32,
+    /// The last error.
+    pub last_error: Option<String>,
+    /// When the current certificate was issued here.
+    pub last_issued: Option<SystemTime>,
+}
+
+impl Schedule {
+    /// True if a renewal attempt is due at `now`.
+    pub fn is_due(&self, now: SystemTime) -> bool {
+        self.next_attempt <= now
+    }
+}
+
 /// What a renewal pass did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {

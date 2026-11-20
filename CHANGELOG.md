@@ -12,9 +12,12 @@ All notable changes to weirdnet-tls are listed here. The format follows
 - `AcmeConfig` is `#[non_exhaustive]`: build it with `AcmeConfig::new` and set fields.
 - `HookDns` has private fields (build it with `HookDns::new`); on Windows it runs `cmd /S /C "COMMAND"` with the command unquoted.
 
+- `Acme::load` fills `Status::next_attempt` (and `ari`) from the store.
+
 ### Added
 
 - `cert::valid_private_name` and `AcmeConfig::private_names` for private CAs that certify such names.
+- `acme::schedule`, `Acme::schedule` and `renew::Schedule`: the next renewal from the store alone, for status commands.
 - `HookDns::with_prefix` and `HookDns::with_env`: DNS hooks get the record variables under an app's own prefix, and fixed extras.
 
 ## [0.2.0] - 2026-11-16

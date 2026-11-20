@@ -11,7 +11,8 @@
 //! - [`resolver`]: a rustls SNI [`Resolver`] with per-name hot swap, source order user, ACME,
 //!   self-signed, pinned certificates for internal names, and the TLS-ALPN-01 answers.
 //! - [`renew`]: when to renew (ACME Renewal Information, else two thirds of the lifetime),
-//!   failure backoff from 1 hour to 1 day, a guard on forced renewals, and a typed [`Status`].
+//!   failure backoff from 1 hour to 1 day, a guard on forced renewals, a typed [`Status`], and
+//!   an offline [`Schedule`] read from the store ([`acme::schedule`]).
 //! - [`testing`] (feature `testing`): a mock ACME CA that validates the real challenge answers.
 //!
 //! The crate never serves plain HTTP in place of HTTPS: when an order fails, the resolver keeps
@@ -41,7 +42,7 @@ pub use cert::{CertInfo, CertPair};
 pub use challenge::{DnsChallenge, DnsRecord, HookDns, Http01Board, ManualDns};
 pub use error::{Error, Result};
 pub use instant_acme;
-pub use renew::{Outcome, State, Status};
+pub use renew::{Outcome, Schedule, State, Status};
 pub use resolver::{Resolver, Source};
 pub use rustls;
 pub use store::{CertStore, FileStore, MemoryStore};

@@ -18,7 +18,7 @@
 
 use crate::cert::{self, CertInfo, CertPair};
 use crate::challenge::{DnsChallenge, DnsRecord, Http01Board};
-use crate::renew::{self, Outcome, Persisted, State, Status, Window};
+use crate::renew::{self, Outcome, Persisted, Schedule, State, Status, Window};
 use crate::resolver::{Resolver, Source};
 use crate::store::{self, CertStore};
 use crate::{Error, Result};
@@ -170,6 +170,37 @@ impl AcmeConfig {
     }
 }
 
+/// When certificate set `cfg` in `store` is due for renewal, from the stored certificate, the
+/// cached ARI window and the failure backoff, without the network or a running [`Acme`] (for
+/// status commands). The renewer may still move it once it asks the CA for a fresh ARI window.
+pub fn schedule(store: &dyn CertStore, cfg: &AcmeConfig, now: SystemTime) -> Result<Schedule> {
+    let st: Persisted = store::get_json(store, &store::state_key(&cfg.set))?.unwrap_or_default();
+    let cert = match store::load_cert(store, &cfg.set)? {
+        Some(p) => Some(cert::certified_key(&p)?.1),
+        None => None,
+    };
+    let (due, ari) = match &cert {
+        Some(c) if covers_names(cfg, c) => match (&st.ari, &c.ari_id) {
+            (Some((id, w)), Some(cid)) if cfg.ari && id == cid => (renew::pick(*w, &c.serial), true),
+            _ => (renew::fallback(c.not_before, c.not_after), false),
+        },
+        _ => (now, false),
+    };
+    Ok(Schedule {
+        cert,
+        due,
+        next_attempt: renew::next_attempt(due, &st),
+        ari,
+        failures: st.failures,
+        last_error: st.last_error,
+        last_issued: st.last_issued,
+    })
+}
+
+fn covers_names(cfg: &AcmeConfig, c: &CertInfo) -> bool {
+    cfg.names.iter().all(|n| c.names.contains(&cert::normalize(n)))
+}
+
 type ClientFactory = Arc<dyn Fn() -> Box<dyn HttpClient> + Send + Sync>;
 
 /// One certificate set kept current from an ACME CA.
@@ -276,15 +307,22 @@ impl Acme {
         }
     }
 
-    /// Installs the stored certificate in the resolver and updates the status.
+    /// Installs the stored certificate in the resolver and updates the status, with the next
+    /// attempt from [`Acme::schedule`].
     pub fn load(&self) -> Result<Option<CertInfo>> {
         let cur = match self.stored()? {
             Some((p, _)) => Some(self.resolver.set(Source::Acme, &p)?),
             None => None,
         };
         let st = self.persisted();
-        self.publish(&st, cur.as_ref(), None, false, None);
+        let sched = self.schedule(SystemTime::now()).ok();
+        self.publish(&st, cur.as_ref(), sched.as_ref().map(|s| s.next_attempt), sched.is_some_and(|s| s.ari), None);
         Ok(cur)
+    }
+
+    /// When this set is due for renewal, from the store alone (see [`schedule`]).
+    pub fn schedule(&self, now: SystemTime) -> Result<Schedule> {
+        schedule(&*self.store, &self.cfg, now)
     }
 
     fn publish(&self, st: &Persisted, cur: Option<&CertInfo>, next: Option<SystemTime>, ari: bool, busy: Option<State>) {
@@ -334,7 +372,7 @@ impl Acme {
     /// When the current certificate should be renewed, and whether ARI said so.
     pub async fn due(&self, now: SystemTime) -> Result<(SystemTime, bool)> {
         let Some((_, cur)) = self.stored()? else { return Ok((now, false)) };
-        if !self.cfg.names.iter().all(|n| cur.names.contains(&cert::normalize(n))) {
+        if !covers_names(&self.cfg, &cur) {
             return Ok((now, false));
         }
         let fallback = renew::fallback(cur.not_before, cur.not_after);
