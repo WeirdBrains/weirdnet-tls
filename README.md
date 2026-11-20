@@ -46,7 +46,10 @@ let tls = resolver.server_config(&[b"h2", b"http/1.1"])?; // hand to tokio-rustl
 ```
 
 DNS-01 hooks get `WEIRDNET_TLS_ACTION` (`present` or `cleanup`), `WEIRDNET_TLS_DOMAIN`,
-`WEIRDNET_TLS_NAME` and `WEIRDNET_TLS_TXT`. grindvakt-core providers cannot delete records,
+`WEIRDNET_TLS_NAME` and `WEIRDNET_TLS_TXT`. `HookDns::with_prefix("MYAPP_ACME_")` sets the
+same four under an app's own prefix (`MYAPP_ACME_TXT`), and `HookDns::with_env` adds fixed
+variables; they are in the environment before the shell reads the command, so `$MYAPP_ACME_TXT`
+(`sh -c`) or `%MYAPP_ACME_TXT%` (`cmd /S /C`, on Windows) expands directly. grindvakt-core providers cannot delete records,
 so with `GrindvaktDns` the `_acme-challenge` TXT record is overwritten on each order and left
 in place afterwards.
 

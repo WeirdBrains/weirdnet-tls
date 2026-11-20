@@ -121,43 +121,98 @@ pub trait DnsChallenge: Send + Sync {
     fn cleanup<'a>(&'a self, record: &'a DnsRecord) -> BoxFuture<'a, Result<()>>;
 }
 
-/// Runs a command for each record: `sh -c COMMAND` (`cmd /C` on Windows) with
-/// `WEIRDNET_TLS_ACTION` (`present` or `cleanup`), `WEIRDNET_TLS_DOMAIN`, `WEIRDNET_TLS_NAME`
-/// and `WEIRDNET_TLS_TXT` in the environment. A non-zero exit fails the step.
+/// Runs a command for each record: `sh -c COMMAND`, or on Windows `cmd /S /C "COMMAND"` with
+/// the command passed verbatim, with `WEIRDNET_TLS_ACTION` (`present` or `cleanup`),
+/// `WEIRDNET_TLS_DOMAIN`, `WEIRDNET_TLS_NAME` and `WEIRDNET_TLS_TXT` in the environment. A
+/// non-zero exit fails the step.
+///
+/// [`HookDns::with_prefix`] sets the same four variables under an app's own prefix too, and
+/// [`HookDns::with_env`] adds fixed ones. They are in the hook's environment before the shell
+/// reads the command, so `$APP_TXT` or `%APP_TXT%` in the command expands directly (no
+/// `export` lines or `call` re-expansion needed).
 #[derive(Debug, Clone)]
 pub struct HookDns {
     /// The command line.
     pub command: String,
+    prefixes: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+/// The variables every hook gets, without their prefix.
+pub const HOOK_VARS: [&str; 4] = ["ACTION", "DOMAIN", "NAME", "TXT"];
+
+/// The prefix of the variables every hook gets.
+pub const HOOK_PREFIX: &str = "WEIRDNET_TLS_";
+
+fn env_name_ok(n: &str) -> bool {
+    n.bytes().next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_') && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// The program and arguments that run `command` (`windows` picks `cmd`, else `sh`). On Windows
+/// the arguments are one raw string, not re-quoted: `/S /C "COMMAND"`, where `/S` makes `cmd`
+/// strip only the outer quotes and keep the command's own.
+pub(crate) fn shell(command: &str, windows: bool) -> (&'static str, Vec<String>) {
+    if windows { ("cmd", vec![format!("/S /C \"{command}\"")]) } else { ("sh", vec!["-c".into(), command.to_string()]) }
 }
 
 impl HookDns {
     /// A hook running `command`.
     pub fn new(command: impl Into<String>) -> Self {
-        Self { command: command.into() }
+        Self { command: command.into(), prefixes: Vec::new(), env: Vec::new() }
+    }
+
+    /// Also sets `ACTION`, `DOMAIN`, `NAME` and `TXT` under `prefix` (such as `MYAPP_ACME_`
+    /// for `MYAPP_ACME_TXT`). The prefix is letters, digits and `_`, not starting with a digit.
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Result<Self> {
+        let p = prefix.into();
+        if !env_name_ok(&p) {
+            return Err(Error::Config(format!("{p:?} is not an environment variable prefix")));
+        }
+        if p != HOOK_PREFIX && !self.prefixes.contains(&p) {
+            self.prefixes.push(p);
+        }
+        Ok(self)
+    }
+
+    /// Also sets `name` to `value` for every run. The name is letters, digits and `_`, not
+    /// starting with a digit, and can't be one of the record variables.
+    pub fn with_env(mut self, name: impl Into<String>, value: impl Into<String>) -> Result<Self> {
+        let n = name.into();
+        if !env_name_ok(&n) || HOOK_VARS.iter().any(|v| n == format!("{HOOK_PREFIX}{v}")) {
+            return Err(Error::Config(format!("{n:?} can't be set for the DNS hook")));
+        }
+        self.env.retain(|(k, _)| *k != n);
+        self.env.push((n, value.into()));
+        Ok(self)
+    }
+
+    /// The prefixes besides [`HOOK_PREFIX`].
+    pub fn prefixes(&self) -> &[String] {
+        &self.prefixes
+    }
+
+    /// The environment a run for `action` (`present` or `cleanup`) on `r` gets, in order: the
+    /// fixed variables, then the record variables under each prefix, `WEIRDNET_TLS_` first.
+    pub fn vars(&self, action: &str, r: &DnsRecord) -> Vec<(String, String)> {
+        let values = [action, r.domain.as_str(), r.name.as_str(), r.value.as_str()];
+        let mut out = self.env.clone();
+        for p in std::iter::once(HOOK_PREFIX).chain(self.prefixes.iter().map(String::as_str)) {
+            out.extend(HOOK_VARS.iter().zip(values).map(|(v, x)| (format!("{p}{v}"), x.to_string())));
+        }
+        out
     }
 
     async fn run(&self, action: &str, r: &DnsRecord) -> Result<()> {
+        let (program, args) = shell(&self.command, cfg!(windows));
+        let mut c = tokio::process::Command::new(program);
         #[cfg(windows)]
-        let mut c = {
-            let mut c = tokio::process::Command::new("cmd");
-            c.arg("/C").arg(&self.command);
-            c
-        };
+        for a in &args {
+            c.raw_arg(a);
+        }
         #[cfg(not(windows))]
-        let mut c = {
-            let mut c = tokio::process::Command::new("sh");
-            c.arg("-c").arg(&self.command);
-            c
-        };
-        let st = c
-            .env("WEIRDNET_TLS_ACTION", action)
-            .env("WEIRDNET_TLS_DOMAIN", &r.domain)
-            .env("WEIRDNET_TLS_NAME", &r.name)
-            .env("WEIRDNET_TLS_TXT", &r.value)
-            .kill_on_drop(true)
-            .status()
-            .await
-            .map_err(|e| Error::Challenge(format!("running the DNS hook: {e}")))?;
+        c.args(&args);
+        let st =
+            c.envs(self.vars(action, r)).kill_on_drop(true).status().await.map_err(|e| Error::Challenge(format!("running the DNS hook: {e}")))?;
         if st.success() { Ok(()) } else { Err(Error::Challenge(format!("the DNS hook's {action} for {} failed ({st})", r.name))) }
     }
 }
@@ -374,6 +429,79 @@ mod tests {
             "present example.com _acme-challenge.example.com abc\ncleanup example.com _acme-challenge.example.com abc\n"
         );
         assert!(HookDns::new("exit 3").present(&r).await.is_err());
+    }
+
+    #[test]
+    fn hook_vars_take_prefixes_and_extras() {
+        let h = HookDns::new("x").with_prefix("APP_ACME_").unwrap().with_env("APP_ZONE", "example.com").unwrap();
+        let h = h.with_prefix("APP_ACME_").unwrap().with_prefix(HOOK_PREFIX).unwrap().with_env("APP_ZONE", "example.org").unwrap();
+        assert_eq!(h.prefixes(), ["APP_ACME_"]);
+        let v = h.vars("present", &DnsRecord::new("*.example.com", "abc"));
+        let names: Vec<&str> = v.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "APP_ZONE",
+                "WEIRDNET_TLS_ACTION",
+                "WEIRDNET_TLS_DOMAIN",
+                "WEIRDNET_TLS_NAME",
+                "WEIRDNET_TLS_TXT",
+                "APP_ACME_ACTION",
+                "APP_ACME_DOMAIN",
+                "APP_ACME_NAME",
+                "APP_ACME_TXT"
+            ]
+        );
+        assert_eq!(v[0].1, "example.org");
+        assert_eq!(v[8].1, "abc");
+        assert_eq!(v[7].1, "_acme-challenge.example.com");
+        for bad in ["", "1A", "A-B", "A=B", "A B"] {
+            assert!(HookDns::new("x").with_prefix(bad).is_err(), "{bad:?}");
+            assert!(HookDns::new("x").with_env(bad, "v").is_err(), "{bad:?}");
+        }
+        assert!(HookDns::new("x").with_env("WEIRDNET_TLS_TXT", "v").is_err(), "record variables are fixed");
+    }
+
+    #[test]
+    fn windows_runs_the_hook_verbatim_without_call() {
+        // The variables are in cmd's environment before it parses the line, so the hook's own
+        // %APP_ACME_TXT% expands without `set` lines and `call` re-expansion.
+        let hook = r#""C:\Program Files\app\hook.cmd" %APP_ACME_ACTION% "%APP_ACME_TXT%" & echo done"#;
+        let (p, a) = shell(hook, true);
+        assert_eq!(p, "cmd");
+        assert_eq!(a, [format!("/S /C \"{hook}\"")]);
+        assert!(!a[0].contains("call ") && !a[0].contains("set "));
+        let (p, a) = shell("echo \"$APP_ACME_TXT\"", false);
+        assert_eq!((p, a), ("sh", vec!["-c".to_string(), "echo \"$APP_ACME_TXT\"".to_string()]));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hook_sees_its_prefix() {
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("out");
+        let hook = HookDns::new(format!("echo \"$APP_ACME_ACTION $APP_ACME_TXT $APP_ZONE $WEIRDNET_TLS_NAME\" >> {}", out.display()))
+            .with_prefix("APP_ACME_")
+            .unwrap()
+            .with_env("APP_ZONE", "example.com")
+            .unwrap();
+        hook.present(&DnsRecord::new("a.example.com", "abc")).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "present abc example.com _acme-challenge.a.example.com\n");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_hook_sees_its_prefix() {
+        let d = tempfile::tempdir().unwrap();
+        let out = d.path().join("out.txt");
+        let hook = HookDns::new(format!("echo %APP_ACME_ACTION% %APP_ACME_TXT% %APP_ZONE%> \"{}\"", out.display()))
+            .with_prefix("APP_ACME_")
+            .unwrap()
+            .with_env("APP_ZONE", "example.com")
+            .unwrap();
+        hook.present(&DnsRecord::new("a.example.com", "abc")).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap().trim_end(), "present abc example.com");
+        assert!(HookDns::new("exit /b 3").present(&DnsRecord::new("a.example.com", "abc")).await.is_err());
     }
 
     #[tokio::test]
