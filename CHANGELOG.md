@@ -11,7 +11,6 @@ All notable changes to weirdnet-tls are listed here. The format follows
 - `cert::valid_name` and `AcmeConfig::validate` refuse `localhost`, `*.localhost`, IP addresses and all-digit top labels, which public CAs never certify.
 - `AcmeConfig` is `#[non_exhaustive]`: build it with `AcmeConfig::new` and set fields.
 - `HookDns` has private fields (build it with `HookDns::new`); on Windows it runs `cmd /S /C "COMMAND"` with the command unquoted.
-
 - `Acme::load` fills `Status::next_attempt` (and `ari`) from the store.
 
 ### Added
