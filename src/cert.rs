@@ -170,14 +170,31 @@ pub fn name_matches(pattern: &str, host: &str) -> bool {
     }
 }
 
-/// True if `name` is a DNS name an ACME CA can certify (`*.` allowed if `wildcard_ok`).
+/// True if `name` is a DNS name a public ACME CA (Let's Encrypt and the like) can certify
+/// (`*.` allowed if `wildcard_ok`): a valid host name with at least two labels, not
+/// `localhost` or under `.localhost`, not an IP address, and not ending in an all-digit label.
+/// Use [`valid_private_name`] for a private CA that certifies such names.
 pub fn valid_name(name: &str, wildcard_ok: bool) -> bool {
+    valid_private_name(name, wildcard_ok) && public_name(name.strip_prefix("*.").unwrap_or(name))
+}
+
+/// True if `name` is a syntactically valid DNS name with at least two labels (`*.` allowed if
+/// `wildcard_ok`), without [`valid_name`]'s public-CA rules: `a.localhost` and all-digit top
+/// labels pass. For private CAs; see [`crate::AcmeConfig::private_names`].
+pub fn valid_private_name(name: &str, wildcard_ok: bool) -> bool {
     let n = name.strip_prefix("*.").filter(|_| wildcard_ok).unwrap_or(name);
     n.len() <= 253
         && n.contains('.')
         && n.split('.').all(|l| {
             !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         })
+}
+
+/// Public CAs refuse `localhost`, IP addresses and names whose top label is all digits.
+fn public_name(name: &str) -> bool {
+    let n = normalize(name);
+    let top = n.rsplit('.').next().unwrap_or("");
+    n != "localhost" && !n.ends_with(".localhost") && n.parse::<std::net::IpAddr>().is_err() && !top.bytes().all(|b| b.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -201,6 +218,22 @@ mod tests {
         assert!(!valid_name("localhost", false));
         assert!(!valid_name("-a.example.com", false));
         assert!(!valid_name("a_b.example.com", false));
+    }
+
+    #[test]
+    fn public_cas_refuse_local_and_numeric_names() {
+        for bad in ["localhost", "a.localhost", "A.LocalHost.", "*.localhost", "*.a.localhost", "127.0.0.1", "10.0.0.1", "::1", "a.b.123", "1.2"] {
+            assert!(!valid_name(bad, true), "{bad:?}");
+        }
+        assert!(valid_name("a.example.123x", false));
+        assert!(valid_name("localhost.example.com", false));
+        assert!(valid_name("1.example.com", false));
+        // A private CA may certify them.
+        for ok in ["a.localhost", "*.a.localhost", "a.b.123", "127.0.0.1"] {
+            assert!(valid_private_name(ok, true), "{ok:?}");
+        }
+        assert!(!valid_private_name("localhost", true), "one label");
+        assert!(!valid_private_name("::1", true));
     }
 
     #[test]

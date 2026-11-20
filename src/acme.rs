@@ -88,8 +88,9 @@ impl ChallengeKind {
     }
 }
 
-/// What to ask the CA for.
+/// What to ask the CA for. Start from [`AcmeConfig::new`] and set fields.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AcmeConfig {
     /// The certificate set's id in the store (`a-z0-9._-`).
     pub set: String,
@@ -111,6 +112,10 @@ pub struct AcmeConfig {
     pub ari: bool,
     /// Polling of orders and certificates.
     pub retry: RetryPolicy,
+    /// Accept names only a private CA certifies (`a.localhost`, all-digit top labels), checked
+    /// with [`cert::valid_private_name`] instead of [`cert::valid_name`]. Needs a
+    /// [`Directory::Custom`] CA: Let's Encrypt refuses them.
+    pub private_names: bool,
 }
 
 impl AcmeConfig {
@@ -127,6 +132,7 @@ impl AcmeConfig {
             dns_wait: Duration::from_secs(30),
             ari: true,
             retry: RetryPolicy::new().timeout(Duration::from_secs(120)),
+            private_names: false,
         }
     }
 
@@ -139,9 +145,17 @@ impl AcmeConfig {
         if self.names.is_empty() {
             return Err(Error::Config("no names to certify".into()));
         }
+        if self.private_names && !matches!(self.directory, Directory::Custom(_)) {
+            return Err(Error::Config("private_names needs a private CA (Directory::Custom)".into()));
+        }
         for n in &self.names {
-            if !cert::valid_name(n, true) {
-                return Err(Error::Config(format!("{n:?} is not a DNS name a CA can certify")));
+            if self.private_names && !cert::valid_private_name(n, true) {
+                return Err(Error::Config(format!("{n:?} is not a DNS name")));
+            }
+            if !self.private_names && !cert::valid_name(n, true) {
+                return Err(Error::Config(format!(
+                    "{n:?} is not a DNS name a public CA can certify (no localhost, IP addresses or all-digit top labels)"
+                )));
             }
             if n.starts_with("*.") && self.challenge != ChallengeKind::Dns01 {
                 return Err(Error::Config(format!("{n} is a wildcard: wildcards need dns-01")));
@@ -589,5 +603,21 @@ mod tests {
         c.contact = vec!["nope".into()];
         assert!(c.validate().is_err());
         assert_eq!(Directory::LetsEncryptStaging.url(), LETS_ENCRYPT_STAGING);
+    }
+
+    #[test]
+    fn local_names_need_a_private_ca() {
+        for bad in ["a.localhost", "127.0.0.1", "a.b.123"] {
+            let mut c = AcmeConfig::new("main", vec![bad.into()]);
+            assert!(c.validate().unwrap_err().to_string().contains("public CA"), "{bad:?}");
+            c.private_names = true;
+            assert!(c.validate().unwrap_err().to_string().contains("Directory::Custom"), "{bad:?}");
+            c.directory = Directory::Custom("https://ca.example.com/directory".into());
+            c.validate().unwrap();
+        }
+        let mut c = AcmeConfig::new("main", vec!["localhost".into()]);
+        c.directory = Directory::Custom("https://ca.example.com/directory".into());
+        c.private_names = true;
+        assert!(c.validate().is_err(), "one label is never a CA name");
     }
 }

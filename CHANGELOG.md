@@ -6,6 +6,15 @@ All notable changes to weirdnet-tls are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `cert::valid_name` and `AcmeConfig::validate` refuse `localhost`, `*.localhost`, IP addresses and all-digit top labels, which public CAs never certify.
+- `AcmeConfig` is `#[non_exhaustive]`: build it with `AcmeConfig::new` and set fields.
+
+### Added
+
+- `cert::valid_private_name` and `AcmeConfig::private_names` for private CAs that certify such names.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added

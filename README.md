@@ -7,6 +7,8 @@ itcmdr and TAUR.
 - **ACME** over [instant-acme](https://docs.rs/instant-acme): an account per directory kept
   in the store, several names per certificate, wildcards, ACME profiles (optionally falling
   back to the CA's default), Let's Encrypt production or staging, or any RFC 8555 directory.
+  Names a public CA refuses (`localhost`, `*.localhost`, IP addresses, all-digit top labels)
+  fail `AcmeConfig::validate`; `AcmeConfig::private_names` allows them for a private CA.
 - **Challenges**: TLS-ALPN-01 answered by the resolver on your port 443, HTTP-01 from a token
   board (serve it with `serve_http01` or your own router through `Http01Board::answer`), and
   DNS-01 through the `DnsChallenge` trait: a hook command, a manual prompt, or (feature
