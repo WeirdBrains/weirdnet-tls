@@ -18,10 +18,12 @@ itcmdr and TAUR.
   database.
 - **Resolver**: per-name certificates swapped without a restart. A handshake gets a pinned
   certificate first (internal names, a private CA), then the user's own, then ACME, then
-  self-signed, skipping expired ones. A default answers handshakes without SNI.
+  self-signed, skipping expired ones. A default answers handshakes without SNI or for an
+  unknown name; `Acme::with_default_cert(true)` makes it the ACME certificate.
 - **Renewal**: at a point in the CA's ACME Renewal Information window (RFC 9773) with
   `replaces`, else two thirds into the lifetime; failures back off from 1 hour to 1 day; a
-  forced renewal within a day of the last issue is refused; `Acme::watch` gives a typed
+  forced renewal within a day of the last issue is refused (`Acme::trigger_renewal` asks the
+  running renewer for one, `Acme::trigger` only for a check); `Acme::watch` gives a typed
   `Status`. `acme::schedule(store, cfg, now)` says when the next renewal is due from the store
   alone (cached ARI window, backoff), for status commands while the app isn't running. A failed order never drops TLS: the last certificate stays in service.
 - **Crypto**: `ring` (default) or `aws-lc-rs`.

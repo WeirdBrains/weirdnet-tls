@@ -86,3 +86,69 @@ async fn schedule_reads_the_store_only() {
     let more = config("s", &["s.example.com", "t.example.com"], ChallengeKind::Http01);
     assert_eq!(acme::schedule(&*store, &more, now).unwrap().due, now);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn acme_cert_can_be_the_default() {
+    let ca = MockCa::new();
+    let store: Arc<dyn CertStore> = Arc::new(MemoryStore::new());
+    let resolver = Arc::new(Resolver::with_self_signed(&names(&["d.example.com"])).unwrap());
+    let cfg = config("d", &["d.example.com"], ChallengeKind::Http01);
+    let (a, _srv) = http01_acme(&ca, cfg.clone(), store.clone(), resolver.clone()).await;
+    let a = a.with_default_cert(true);
+    let info = a.issue().await.unwrap();
+    for sni in [None, Some("192.0.2.1"), Some("other.example.org")] {
+        let (s, k) = resolver.lookup(sni).unwrap();
+        assert_eq!((s, k.end_entity_cert().unwrap().to_vec()), (Source::Acme, info.der.clone()), "{sni:?}");
+    }
+    // Off (the default): the self-signed default stays.
+    let r2 = Arc::new(Resolver::with_self_signed(&names(&["d.example.com"])).unwrap());
+    Acme::new(cfg.clone(), store.clone(), r2.clone()).unwrap().load().unwrap();
+    assert_eq!(r2.lookup(None).unwrap().0, Source::SelfSigned);
+    assert_eq!(r2.lookup(Some("d.example.com")).unwrap().0, Source::Acme);
+    // A restart with it on serves the stored cert by default at once.
+    let r3 = Arc::new(Resolver::new());
+    Acme::new(cfg, store, r3.clone()).unwrap().with_default_cert(true).load().unwrap();
+    assert_eq!(r3.default_source(), Some(Source::Acme));
+    assert_eq!(r3.lookup(None).unwrap().1.end_entity_cert().unwrap().to_vec(), info.der);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn trigger_renewal_forces_but_keeps_the_guard() {
+    let ca = MockCa::new();
+    let store: Arc<dyn CertStore> = Arc::new(MemoryStore::new());
+    let (a, _srv) = http01_acme(&ca, config("f", &["f.example.com"], ChallengeKind::Http01), store.clone(), Arc::new(Resolver::new())).await;
+    let a = Arc::new(a);
+    let mut rx = a.watch();
+    let h = a.clone().spawn();
+    let wait_valid = |rx: &mut tokio::sync::watch::Receiver<Status>, n: usize| {
+        let ca = ca.clone();
+        let rx = rx.clone();
+        async move {
+            let mut rx = rx;
+            tokio::time::timeout(Duration::from_secs(10), rx.wait_for(|s| s.state == State::Valid && ca.issued() == n)).await.unwrap().unwrap();
+        }
+    };
+    wait_valid(&mut rx, 1).await;
+    let first = a.status().not_after;
+
+    // A plain trigger only checks: not due, nothing issued.
+    a.trigger();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(ca.issued(), 1);
+
+    // Forced within a day of the last issue: the guard holds.
+    a.trigger_renewal();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(ca.issued(), 1, "repeat-certificate guard");
+    assert_eq!(a.status().state, State::Valid);
+
+    // Once the guard has passed, a forced renewal goes through ahead of the schedule.
+    let mut p = store::get_json::<renew::Persisted>(&*store, &store::state_key("f")).unwrap().unwrap();
+    p.last_issued = Some(SystemTime::now() - 2 * renew::FORCE_MIN_AGE);
+    store::put_json(&*store, &store::state_key("f"), &p).unwrap();
+    a.trigger_renewal();
+    wait_valid(&mut rx, 2).await;
+    assert_eq!(ca.issued(), 2);
+    assert!(a.status().not_after >= first);
+    h.abort();
+}

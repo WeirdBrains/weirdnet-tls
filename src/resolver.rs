@@ -45,7 +45,7 @@ struct Entry {
 #[derive(Default)]
 struct Inner {
     names: HashMap<String, HashMap<Source, Entry>>,
-    default: Option<Entry>,
+    default: Option<(Source, Entry)>,
     alpn: HashMap<String, Arc<CertifiedKey>>,
 }
 
@@ -115,9 +115,27 @@ impl Resolver {
         }
     }
 
-    /// The certificate for handshakes without SNI or with an unknown name.
+    /// The certificate for handshakes without SNI or with an unknown name; lookups report it
+    /// as [`Source::SelfSigned`] (see [`Resolver::set_default_as`]).
     pub fn set_default(&self, key: Arc<CertifiedKey>, not_after: SystemTime) {
-        self.inner.write().unwrap().default = Some(Entry { key, not_after });
+        self.set_default_as(Source::SelfSigned, key, not_after);
+    }
+
+    /// [`Resolver::set_default`] for a key from `source`, which lookups report.
+    pub fn set_default_as(&self, source: Source, key: Arc<CertifiedKey>, not_after: SystemTime) {
+        self.inner.write().unwrap().default = Some((source, Entry { key, not_after }));
+    }
+
+    /// Makes `pair` from `source` the default certificate; returns what it says.
+    pub fn set_default_pair(&self, source: Source, pair: &CertPair) -> Result<CertInfo> {
+        let (k, i) = cert::certified_key(pair)?;
+        self.set_default_as(source, k, i.not_after);
+        Ok(i)
+    }
+
+    /// The default certificate's source, if one is set.
+    pub fn default_source(&self) -> Option<Source> {
+        self.inner.read().unwrap().default.as_ref().map(|(s, _)| *s)
     }
 
     /// Clears the default certificate.
@@ -144,7 +162,7 @@ impl Resolver {
                 .collect();
             cands.iter().find(|(_, e)| e.not_after > now).or(cands.first()).map(|(s, e)| (*s, e.key.clone()))
         });
-        found.or_else(|| g.default.as_ref().map(|e| (Source::SelfSigned, e.key.clone())))
+        found.or_else(|| g.default.as_ref().map(|(s, e)| (*s, e.key.clone())))
     }
 
     /// Publishes a TLS-ALPN-01 answer for `name`.
@@ -248,7 +266,14 @@ mod tests {
         assert_eq!((s, leaf(&k)), (Source::Pinned, pi.der));
         assert_eq!(r.lookup(None).unwrap().0, Source::SelfSigned);
         assert_eq!(r.lookup(Some("other.test")).unwrap().0, Source::SelfSigned);
+        assert_eq!(r.default_source(), Some(Source::SelfSigned));
+        let acme = pair(&["host.example.com"]);
+        let ai = r.set_default_pair(Source::Acme, &acme).unwrap();
+        let (s, k) = r.lookup(None).unwrap();
+        assert_eq!((s, leaf(&k)), (Source::Acme, ai.der.clone()));
+        assert_eq!(r.lookup(Some("other.test")).unwrap().0, Source::Acme);
         r.clear_default();
         assert!(r.lookup(None).is_none());
+        assert_eq!(r.default_source(), None);
     }
 }

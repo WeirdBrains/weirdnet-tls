@@ -18,6 +18,9 @@ All notable changes to weirdnet-tls are listed here. The format follows
 
 - `cert::valid_private_name` and `AcmeConfig::private_names` for private CAs that certify such names.
 - `acme::schedule`, `Acme::schedule` and `renew::Schedule`: the next renewal from the store alone, for status commands.
+- `Acme::with_default_cert`: the ACME certificate also answers handshakes without SNI or for other names.
+- `Resolver::set_default_as`, `set_default_pair` and `default_source`: a default certificate with its own source.
+- `Acme::trigger_renewal`: a forced renewal from the background renewer, still behind the repeat-certificate guard.
 - `HookDns::with_prefix` and `HookDns::with_env`: DNS hooks get the record variables under an app's own prefix, and fixed extras.
 
 ## [0.2.0] - 2026-11-16

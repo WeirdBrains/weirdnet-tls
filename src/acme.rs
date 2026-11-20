@@ -26,6 +26,7 @@ use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{Notify, watch};
 
@@ -213,6 +214,8 @@ pub struct Acme {
     client: Option<ClientFactory>,
     status: watch::Sender<Status>,
     wake: Notify,
+    force: AtomicBool,
+    default_cert: bool,
     busy: tokio::sync::Mutex<()>,
 }
 
@@ -236,6 +239,8 @@ impl Acme {
             client: None,
             status,
             wake: Notify::new(),
+            force: AtomicBool::new(false),
+            default_cert: false,
             busy: tokio::sync::Mutex::new(()),
         })
     }
@@ -249,6 +254,14 @@ impl Acme {
     /// Publishes DNS-01 records through `dns`.
     pub fn with_dns(mut self, dns: Arc<dyn DnsChallenge>) -> Self {
         self.dns = Some(dns);
+        self
+    }
+
+    /// With `on`, the ACME certificate is also the resolver's default, served to handshakes
+    /// without SNI or for a name it doesn't cover (an IP address, another host name), each
+    /// time it is loaded or issued.
+    pub fn with_default_cert(mut self, on: bool) -> Self {
+        self.default_cert = on;
         self
     }
 
@@ -283,9 +296,26 @@ impl Acme {
         self.status.subscribe()
     }
 
-    /// Wakes the background renewer to check now.
+    /// Wakes the background renewer to check now (it renews only if due).
     pub fn trigger(&self) {
         self.wake.notify_one();
+    }
+
+    /// Wakes the background renewer for a forced renewal, whatever the schedule. The repeat
+    /// guard still applies: within [`renew::FORCE_MIN_AGE`] of the last issue the forced pass
+    /// is skipped (logged as [`Error::TooSoon`]) and the renewer goes on with the schedule.
+    /// Without a running renewer, the next [`Acme::spawn`] does it first.
+    pub fn trigger_renewal(&self) {
+        self.force.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    fn install(&self, pair: &CertPair) -> Result<CertInfo> {
+        let info = self.resolver.set(Source::Acme, pair)?;
+        if self.default_cert {
+            self.resolver.set_default_pair(Source::Acme, pair)?;
+        }
+        Ok(info)
     }
 
     fn persisted(&self) -> Persisted {
@@ -311,7 +341,7 @@ impl Acme {
     /// attempt from [`Acme::schedule`].
     pub fn load(&self) -> Result<Option<CertInfo>> {
         let cur = match self.stored()? {
-            Some((p, _)) => Some(self.resolver.set(Source::Acme, &p)?),
+            Some((p, _)) => Some(self.install(&p)?),
             None => None,
         };
         let st = self.persisted();
@@ -463,14 +493,26 @@ impl Acme {
     }
 
     /// Runs renewal passes until the task is aborted: issues when due, sleeps until the next
-    /// check (at most an hour), and wakes early on [`Acme::trigger`].
+    /// check (at most an hour), wakes early on [`Acme::trigger`], and renews now on
+    /// [`Acme::trigger_renewal`].
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             if let Err(e) = self.load() {
                 tracing::warn!(set = %self.cfg.set, "loading the stored certificate: {e}");
             }
             loop {
-                let wait = match self.renew_once(false).await {
+                let pass = if self.force.swap(false, Ordering::SeqCst) {
+                    match self.renew_once(true).await {
+                        Err(Error::TooSoon(t)) => {
+                            tracing::warn!(set = %self.cfg.set, "forced renewal skipped: the last certificate is too new (until {t:?})");
+                            self.renew_once(false).await
+                        }
+                        r => r,
+                    }
+                } else {
+                    self.renew_once(false).await
+                };
+                let wait = match pass {
                     Ok(Outcome::NotDue(t)) => t.duration_since(SystemTime::now()).unwrap_or_default(),
                     Ok(Outcome::Renewed(_)) => Duration::ZERO,
                     Err(_) => self.status().next_attempt.and_then(|t| t.duration_since(SystemTime::now()).ok()).unwrap_or(renew::BACKOFF_MIN),
@@ -611,7 +653,7 @@ impl Acme {
             }
         }
         store::save_cert(&*self.store, &self.cfg.set, &pair)?;
-        self.resolver.set(Source::Acme, &pair)?;
+        self.install(&pair)?;
         Ok(info)
     }
 }
