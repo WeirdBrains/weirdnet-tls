@@ -94,6 +94,70 @@ pub fn serve_http01(listener: tokio::net::TcpListener, board: Arc<Http01Board>) 
     })
 }
 
+/// Serves only TLS-ALPN-01 validation on `listener` (port 443) from `resolver`'s challenge
+/// certificates, for when the app's own HTTPS listener isn't running (a CLI renewing while the
+/// app is stopped). Each connection gets a TLS handshake with
+/// [`crate::Resolver::challenge_config`] and is then closed: no application data, and every
+/// handshake that isn't an `acme-tls/1` validation for a published name fails. Abort the
+/// returned task to stop.
+pub fn serve_tls_alpn01(listener: tokio::net::TcpListener, resolver: Arc<crate::Resolver>) -> Result<tokio::task::JoinHandle<()>> {
+    let cfg = resolver.challenge_config()?;
+    Ok(tokio::spawn(async move {
+        loop {
+            let Ok((s, _)) = listener.accept().await else { continue };
+            let cfg = cfg.clone();
+            tokio::spawn(async move {
+                if let Ok(Err(e)) = tokio::time::timeout(Duration::from_secs(10), handshake_only(s, cfg)).await {
+                    tracing::debug!("tls-alpn-01 listener: {e}");
+                }
+            });
+        }
+    }))
+}
+
+/// One server handshake on `s`, then close_notify.
+async fn handshake_only(mut s: tokio::net::TcpStream, cfg: Arc<rustls::ServerConfig>) -> std::io::Result<()> {
+    let mut conn = rustls::ServerConnection::new(cfg).map_err(std::io::Error::other)?;
+    let mut buf = vec![0u8; 16 * 1024];
+    let res = loop {
+        flush_tls(&mut conn, &mut s).await?;
+        if !conn.is_handshaking() {
+            break Ok(());
+        }
+        let n = s.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        let mut rd = &buf[..n];
+        let mut failed = None;
+        while !rd.is_empty() && failed.is_none() {
+            conn.read_tls(&mut rd)?;
+            if let Err(e) = conn.process_new_packets() {
+                failed = Some(e);
+            }
+        }
+        if let Some(e) = failed {
+            break Err(std::io::Error::other(e));
+        }
+    };
+    if res.is_ok() {
+        conn.send_close_notify();
+    }
+    // Send the close_notify, or the alert for a refused handshake.
+    flush_tls(&mut conn, &mut s).await?;
+    let _ = s.shutdown().await;
+    res
+}
+
+async fn flush_tls(conn: &mut rustls::ServerConnection, s: &mut tokio::net::TcpStream) -> std::io::Result<()> {
+    while conn.wants_write() {
+        let mut out = Vec::new();
+        conn.write_tls(&mut out)?;
+        s.write_all(&out).await?;
+    }
+    Ok(())
+}
+
 /// A DNS-01 TXT record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsRecord {

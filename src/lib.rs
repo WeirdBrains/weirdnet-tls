@@ -3,7 +3,8 @@
 //! - [`acme`]: certificates from an ACME CA (Let's Encrypt or any RFC 8555 directory) over
 //!   [instant-acme](https://docs.rs/instant-acme), with TLS-ALPN-01, HTTP-01 and DNS-01, several
 //!   names per certificate, and the account kept in a [`CertStore`].
-//! - [`challenge`]: the HTTP-01 token board and listener, and DNS-01 publishers (a hook command,
+//! - [`challenge`]: the HTTP-01 token board and listener, a TLS-ALPN-01 challenge-only
+//!   listener, and DNS-01 publishers (a hook command,
 //!   a manual prompt, and [grindvakt-core](https://docs.rs/grindvakt-core) providers with the
 //!   `grindvakt` feature).
 //! - [`store`]: the [`CertStore`] trait, a file store (files 0600), a memory store, and with the

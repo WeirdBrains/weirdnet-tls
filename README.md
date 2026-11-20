@@ -12,7 +12,10 @@ itcmdr and TAUR.
 - **Challenges**: TLS-ALPN-01 answered by the resolver on your port 443, HTTP-01 from a token
   board (serve it with `serve_http01` or your own router through `Http01Board::answer`), and
   DNS-01 through the `DnsChallenge` trait: a hook command, a manual prompt, or (feature
-  `grindvakt`) a [grindvakt-core](https://docs.rs/grindvakt-core) DNS provider.
+  `grindvakt`) a [grindvakt-core](https://docs.rs/grindvakt-core) DNS provider. When the
+  app's own listener isn't running (a CLI renewing while the app is stopped),
+  `Acme::serve_challenge` answers TLS-ALPN-01 (`challenge::serve_tls_alpn01`: handshakes only,
+  never a real certificate) or HTTP-01 on a listener of its own.
 - **Stores**: the `CertStore` trait, `FileStore` (files 0600 in directories 0700, atomic
   writes), `MemoryStore`, and (feature `storage`) `SqlStore` in an encrypted weirdnet-storage
   database.

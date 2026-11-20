@@ -286,6 +286,18 @@ impl Acme {
         &self.http01
     }
 
+    /// Answers this set's challenge on `listener` alone, while the app's own listener isn't
+    /// running: TLS-ALPN-01 with [`crate::challenge::serve_tls_alpn01`] (port 443) or HTTP-01
+    /// with [`crate::challenge::serve_http01`] (port 80). DNS-01 has no listener and is refused.
+    /// Abort the returned task when the order is done.
+    pub fn serve_challenge(&self, listener: tokio::net::TcpListener) -> Result<tokio::task::JoinHandle<()>> {
+        match self.cfg.challenge {
+            ChallengeKind::TlsAlpn01 => crate::challenge::serve_tls_alpn01(listener, self.resolver.clone()),
+            ChallengeKind::Http01 => Ok(crate::challenge::serve_http01(listener, self.http01.clone())),
+            ChallengeKind::Dns01 => Err(Error::Config("dns-01 has no challenge listener".into())),
+        }
+    }
+
     /// The current status.
     pub fn status(&self) -> Status {
         self.status.borrow().clone()

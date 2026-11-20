@@ -175,6 +175,25 @@ impl Resolver {
         self.inner.write().unwrap().alpn.remove(&normalize(name));
     }
 
+    /// The published TLS-ALPN-01 answer for `name`, if any.
+    pub(crate) fn alpn_key(&self, name: &str) -> Option<Arc<CertifiedKey>> {
+        self.inner.read().unwrap().alpn.get(&normalize(name)).cloned()
+    }
+
+    /// A rustls server config that answers only TLS-ALPN-01 validation (ALPN `acme-tls/1`) with
+    /// this resolver's challenge certificates, and fails every other handshake: for a
+    /// challenge-only listener while the app's own HTTPS listener isn't running (see
+    /// [`crate::challenge::serve_tls_alpn01`]).
+    pub fn challenge_config(self: &Arc<Self>) -> Result<Arc<rustls::ServerConfig>> {
+        let mut c = rustls::ServerConfig::builder_with_provider(crate::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| crate::Error::Config(e.to_string()))?
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(AlpnOnly(self.clone())));
+        c.alpn_protocols = vec![ACME_TLS_ALPN.to_vec()];
+        Ok(Arc::new(c))
+    }
+
     /// True while a TLS-ALPN-01 answer for `name` is published.
     pub fn has_alpn(&self, name: &str) -> bool {
         self.inner.read().unwrap().alpn.contains_key(&normalize(name))
@@ -190,6 +209,20 @@ impl Resolver {
         c.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
         c.alpn_protocols.push(ACME_TLS_ALPN.to_vec());
         Ok(Arc::new(c))
+    }
+}
+
+/// Resolves only TLS-ALPN-01 validation handshakes.
+#[derive(Debug)]
+struct AlpnOnly(Arc<Resolver>);
+
+impl ResolvesServerCert for AlpnOnly {
+    fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        let acme = hello.alpn().is_some_and(|mut a| a.any(|p| p == ACME_TLS_ALPN));
+        if !acme {
+            return None;
+        }
+        hello.server_name().and_then(|n| self.0.alpn_key(n))
     }
 }
 

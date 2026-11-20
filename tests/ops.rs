@@ -152,3 +152,92 @@ async fn trigger_renewal_forces_but_keeps_the_guard() {
     assert!(a.status().not_after >= first);
     h.abort();
 }
+
+/// A client handshake to `addr` for `sni` offering `alpn`; the leaf it got, or the error.
+fn handshake(addr: std::net::SocketAddr, sni: &str, alpn: &[u8]) -> Result<Vec<u8>, String> {
+    #[derive(Debug)]
+    struct AnyCert;
+    impl rustls::client::danger::ServerCertVerifier for AnyCert {
+        fn verify_server_cert(
+            &self,
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &[rustls::pki_types::CertificateDer<'_>],
+            _: &rustls::pki_types::ServerName<'_>,
+            _: &[u8],
+            _: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _: &[u8],
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _: &[u8],
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            crypto_provider().signature_verification_algorithms.supported_schemes()
+        }
+    }
+    let mut cc = rustls::ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AnyCert))
+        .with_no_client_auth();
+    cc.alpn_protocols = vec![alpn.to_vec()];
+    let name = rustls::pki_types::ServerName::try_from(sni.to_string()).unwrap();
+    let mut conn = rustls::ClientConnection::new(Arc::new(cc), name).unwrap();
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    while conn.is_handshaking() {
+        conn.complete_io(&mut s).map_err(|e| e.to_string())?;
+    }
+    Ok(conn.peer_certificates().unwrap()[0].to_vec())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_alpn_challenge_only_listener() {
+    let ca = MockCa::new();
+    // The resolver is served nowhere else: only the challenge listener answers the CA.
+    let resolver = Arc::new(Resolver::with_self_signed(&names(&["c.example.com"])).unwrap());
+    let a = acme(&ca, config("c", &["c.example.com"], ChallengeKind::TlsAlpn01), Arc::new(MemoryStore::new()), resolver.clone());
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    ca.validate_tls_alpn_at(addr);
+    let srv = a.serve_challenge(l).unwrap();
+    let Outcome::Renewed(info) = a.renew_once(false).await.unwrap() else { panic!() };
+    assert_eq!(ca.validations(), vec![("c.example.com".into(), "tls-alpn-01".into())]);
+    // It never serves a real certificate, nor answers names without a published challenge.
+    assert_eq!(resolver.lookup(Some("c.example.com")).unwrap().1.end_entity_cert().unwrap().to_vec(), info.der);
+    let ordinary = tokio::task::spawn_blocking(move || {
+        (handshake(addr, "c.example.com", b"http/1.1").is_err(), handshake(addr, "c.example.com", weirdnet_tls::ACME_TLS_ALPN).is_err())
+    })
+    .await
+    .unwrap();
+    assert_eq!(ordinary, (true, true));
+    srv.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http01_challenge_only_listener_and_dns01_refused() {
+    let ca = MockCa::new();
+    let a = acme(&ca, config("h", &["h.example.com"], ChallengeKind::Http01), Arc::new(MemoryStore::new()), Arc::new(Resolver::new()));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    ca.validate_http01_at(l.local_addr().unwrap());
+    let srv = a.serve_challenge(l).unwrap();
+    assert!(matches!(a.renew_once(false).await.unwrap(), Outcome::Renewed(_)));
+    srv.abort();
+    let d = acme(&ca, config("w", &["w.example.com"], ChallengeKind::Dns01), Arc::new(MemoryStore::new()), Arc::new(Resolver::new()));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    assert!(d.serve_challenge(l).is_err());
+}
