@@ -5,6 +5,7 @@
 #
 helpers = "0.3.2"
 project = "weirdnet-tls"
+branch = "maint/0.2"
 timezone = "America/New_York"
 
 [[files]]
