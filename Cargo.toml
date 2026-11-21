@@ -1,6 +1,6 @@
 [package]
 name = "weirdnet-tls"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.99"
 description = "Weirdnet TLS certificates: ACME (TLS-ALPN-01, HTTP-01, DNS-01) over instant-acme, certificate stores, an SNI resolver with hot swap and pinned certificates, ARI-based renewal with backoff and a typed status, ring or aws-lc-rs, and a mock ACME CA for tests."
